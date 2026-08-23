@@ -2,13 +2,16 @@ import Koa from "koa"
 import bodyParser from "@koa/bodyparser"
 import serve from "koa-static"
 import path from "path"
-import exportRouter from "./export/routes"
-import discordRouter from "./discord/routes"
-import twitchRouter from "./twitch-notifier/routes"
-import connectionsRouter from "./connections/routes"
 import debugRouter from "./debug/routes"
 import dashboard from "./dashboard/routes"
 
+// This is the trimmed-down "standalone EA sync" deployment of snallabot:
+// only the EA OAuth dashboard/export-trigger API and health/metrics are mounted.
+// The Discord bot, Twitch notifier, Discord-guild-linking, and the passive
+// Madden Companion App ingestion webhook (which wrote league content into
+// this service's own DB) are intentionally not mounted here - this service
+// never persists league content, it only connects to EA and pushes exported
+// data on to externally-configured destinations.
 const app = new Koa()
 
 app
@@ -24,14 +27,6 @@ app
       };
     }
   })
-  .use(exportRouter.routes())
-  .use(exportRouter.allowedMethods())
-  .use(discordRouter.routes())
-  .use(discordRouter.allowedMethods())
-  .use(twitchRouter.routes())
-  .use(twitchRouter.allowedMethods())
-  .use(connectionsRouter.routes())
-  .use(connectionsRouter.allowedMethods())
   .use(debugRouter.routes())
   .use(debugRouter.allowedMethods())
   .use(dashboard.routes())

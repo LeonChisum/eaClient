@@ -34,6 +34,8 @@ html
                     button.btn.btn-secondary(type="button" id="pasteBtn") Paste
                   if discord
                     input#discord(type="hidden" name="discord" value=discord readonly=true)
+                  if return_to
+                    input#return_to(type="hidden" name="return_to" value=return_to readonly=true)
                   .form-text.text-muted.mt-1
                     | Tip: copy the full URL from the browser address bar and paste it here. The form will enable the Continue to Next button when the URL looks valid.
                 .d-flex.justify-content-end

@@ -25,7 +25,7 @@ body
     div#exportFeedback
     .table-responsive
       table.table.table-hover.table-sm.caption-top
-        caption List of Export Url's
+        caption List of Export Url's - this service pushes exported data straight through to these urls, it does not store any of it itself
         thead.table-light
           tr
             th Url
@@ -34,6 +34,9 @@ body
             th(style="text-align: center;") Roster
             th(style="text-align: center;") Extra Data
             th(style="text-align: center;") Auto Update
+            th(style="text-align: center;") Secret
+            th(style="text-align: center;") Last Attempt
+            th(style="text-align: center;") Last Success
             th(style="text-align: center;")
               button#addExportBtn.btn.btn-success(type="button") Add Export Url
         tbody#exportTableBody
@@ -51,129 +54,36 @@ body
                 td(style="text-align: center;")
                   input(type="checkbox", disabled=true, checked=exportDestination.autoUpdate)
                 td(style="text-align: center;")
+                  if exportDestination.hasSecret
+                    span(class="badge bg-success") Set
+                  else
+                    span(class="badge bg-secondary") None
+                td(style="text-align: center;") #{exportDestination.lastExportAttempt ? new Date(exportDestination.lastExportAttempt).toLocaleString() : 'Never'}
+                td(style="text-align: center;") #{exportDestination.lastSuccessfulExport ? new Date(exportDestination.lastSuccessfulExport).toLocaleString() : 'Never'}
+                td(style="text-align: center;")
                   if exportDestination.editable
                     button.btn.btn-outline-danger.btn-sm.remove-export-btn(type="button") Remove
-    div(class="accordion" id="export-status-accordion")
-      div(class="accordion-item")
-        h2(class="accordion-header")
-          button(class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="false" aria-controls="collapseOne") Export Status
-        div(id="collapseOne" class="accordion-collapse collapse" data-bs-parent="#export-status-accordion")
-          div(class="accordion-body")
-            if !exportStatus
-              h4 No Export Status Availaible. Hit Export All Weeks for the bot to retrieve your current season!
-            else
-              div(class="mb-4")
-                h5 Season-Level Status
-                div(class="row")
-                  if exportStatus["MADDEN_TEAM"]
-                    div(class="col-md-6")
-                      div(class="card mb-2")
-                        div(class="card-body p-2")
-                          h6(class="card-title mb-1") Teams
-                          span(class="badge bg-success") Exported
-                          small(class="text-muted d-block") Last: #{exportStatus["MADDEN_TEAM"].lastExported.toLocaleString()}
-
-                  if exportStatus["MADDEN_STANDING"]
-                    div(class="col-md-6")
-                      div(class="card mb-2")
-                        div(class="card-body p-2")
-                          h6(class="card-title mb-1") Standings
-                          span(class="badge bg-success") Exported
-                          small(class="text-muted d-block") Last: #{exportStatus["MADDEN_STANDING"].lastExported.toLocaleString()}
-
-              if exportStatus.weeklyStatus && Object.keys(exportStatus.weeklyStatus).length > 0
-                div(class="mb-4")
-                  h5 Weekly Status
-                  - var sortedWeeks = Object.keys(exportStatus.weeklyStatus).sort()
-                  each weekKey in sortedWeeks
-                    - var weekData = exportStatus.weeklyStatus[weekKey]
-                    div(class="card mb-3")
-                      div(class="card-header")
-                        h6(class="mb-0") #{weekData.displayName}
-                      div(class="card-body")
-                        div(class="row")
-                          if weekData["MADDEN_SCHEDULE"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Schedule: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_SCHEDULE"].lastExported.toLocaleString()}
-
-                          if weekData["MADDEN_TEAM_STAT"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Team Stats: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_TEAM_STAT"].lastExported.toLocaleString()}
-
-                          if weekData["MADDEN_PASSING_STAT"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Passing: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_PASSING_STAT"].lastExported.toLocaleString()}
-
-                          if weekData["MADDEN_RUSHING_STAT"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Rushing: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_RUSHING_STAT"].lastExported.toLocaleString()}
-
-                          if weekData["MADDEN_RECEIVING_STAT"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Receiving: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_RECEIVING_STAT"].lastExported.toLocaleString()}
-
-                          if weekData["MADDEN_DEFENSIVE_STAT"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Defense: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_DEFENSIVE_STAT"].lastExported.toLocaleString()}
-
-                          if weekData["MADDEN_KICKING_STAT"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Kicking: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_KICKING_STAT"].lastExported.toLocaleString()}
-
-                          if weekData["MADDEN_PUNTING_STAT"]
-                            div(class="col-lg-3 col-md-4 col-sm-6 mb-2")
-                              strong Punting: 
-                              span(class="badge ms-1 bg-success") OK
-                              small(class="text-muted d-block") #{weekData["MADDEN_PUNTING_STAT"].lastExported.toLocaleString()}
-
-              if exportStatus.rosterStatus && Object.keys(exportStatus.rosterStatus).length > 0
-                div(class="mb-4")
-                  h5 Roster Status
-                  - var sortedRosterKeys = Object.keys(exportStatus.rosterStatus).sort((a, b) => { if (a.toLowerCase().includes('free agent')) return 1; if (b.toLowerCase().includes('free agent')) return -1; return a.localeCompare(b); })
-                  each weekKey in sortedRosterKeys
-                    - var rosterData = exportStatus.rosterStatus[weekKey]
-                    div(class="card mb-2")
-                      div(class="card-header")
-                        h6(class="mb-0") #{weekKey.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())} - Roster
-                      div(class="card-body p-2")
-                        if rosterData["MADDEN_PLAYER"]
-                          strong Roster: 
-                          span(class="badge ms-1 bg-success") OK
-                          small(class="text-muted d-block") Last: #{rosterData["MADDEN_PLAYER"].lastExported.toLocaleString()}
-    div(class="card mb-3 shadow-sm")
-      div(class="card-header bg-primary text-white")
-        h5(class="mb-0") Connect Discord Server
-      div(class="card-body")
-        if discordsToConnect && discordsToConnect.length > 0
-          form(action="/dashboard/connectDiscord" method="POST")
-            div(class="mb-3")
-              label(for="discordServerSelect" class="form-label") Select Discord Server
-              select(class="form-select" id="discordServerSelect" name="guildId" required)
-                option(value="" selected disabled) Choose a server...
-                each discord in discordsToConnect
-                  option(value=discord.guildId) #{discord.name}
-            div(class="mb-3")
-              input(type="hidden" name="leagueId" value=leagueId)
-            button(type="submit" class="btn btn-primary") Connect Discord
-        else
-          div(class="text-center")
-            p(class="mb-3") Authorize Discord to connect your league
-            a(href=oauthUrl class="btn btn-primary")
-              | Connect to Discord
+    if discordEnabled
+      div(class="card mb-3 shadow-sm")
+        div(class="card-header bg-primary text-white")
+          h5(class="mb-0") Connect Discord Server
+        div(class="card-body")
+          if discordsToConnect && discordsToConnect.length > 0
+            form(action="/dashboard/connectDiscord" method="POST")
+              div(class="mb-3")
+                label(for="discordServerSelect" class="form-label") Select Discord Server
+                select(class="form-select" id="discordServerSelect" name="guildId" required)
+                  option(value="" selected disabled) Choose a server...
+                  each discord in discordsToConnect
+                    option(value=discord.guildId) #{discord.name}
+              div(class="mb-3")
+                input(type="hidden" name="leagueId" value=leagueId)
+              button(type="submit" class="btn btn-primary") Connect Discord
+          else
+            div(class="text-center")
+              p(class="mb-3") Authorize Discord to connect your league
+              a(href=oauthUrl class="btn btn-primary")
+                | Connect to Discord
     div(class="d-flex flex-column mt-3")
       div(class="flex-grow-1")
         each league in discordSettings
@@ -254,4 +164,9 @@ body
               td #{game.isAwayHuman ? game.awayUserName : 'CPU'} #{game.awayCityName} #{game.awayName} (#{game.awayWin} - #{game.awayLoss}#{game.awayTie > 0 ? ' - ' + game.awayTie : ''}) at #{game.isHomeHuman ? game.homeUserName : 'CPU'} #{game.homeCityName} #{game.homeName} (#{game.homeWin} - #{game.homeLoss}#{game.homeTie > 0 ? ' - ' + game.homeTie : ''})
               td #{game.result || 'Not Played'}
               td #{game.numberTimesPlayed || 0}
+script.
+  // Set only when this page was loaded with ?key=... in the url - lets this
+  // page's own buttons call its API-key-protected endpoints. Anonymous
+  // visitors without the key simply can't trigger exports/config changes.
+  window.__SYNC_KEY__ = !{JSON.stringify(apiKey || "").replace(/</g, '\\u003c')}
 script(type='text/javascript', src='/dashboard_script.js')

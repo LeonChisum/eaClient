@@ -4,7 +4,7 @@ import { constants, randomBytes, createHash, randomUUID } from "crypto"
 import { Buffer } from "buffer"
 import { TeamExport, StandingExport, SchedulesExport, RushingExport, TeamStatsExport, PuntingExport, ReceivingExport, DefensiveExport, KickingExport, PassingExport, RosterExport } from "../export/madden_league_types"
 import db from "../db/firebase"
-import { createDestination } from "../export/exporter";
+import { createDestination, ExportResult as PushResult } from "../export/exporter";
 import { DEPLOYMENT_URL, QUEUE_CONCURRENCY } from "../config";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { exportCounter } from "../debug/metrics";
@@ -393,16 +393,17 @@ type StoredTokenInformation = {
   token: TokenInformation,
   session?: SessionInformation
 }
-export type ExportDestination = { autoUpdate: boolean, leagueInfo: boolean, rosters: boolean, weeklyStats: boolean, url: string, lastExportAttempt?: Date, lastSuccessfulExport?: Date, editable: boolean, extraData?: boolean }
-const DEFAULT_EXPORT = `${DEPLOYMENT_URL}`
+export type ExportDestination = { autoUpdate: boolean, leagueInfo: boolean, rosters: boolean, weeklyStats: boolean, url: string, secret?: string, lastExportAttempt?: Date, lastSuccessfulExport?: Date, editable: boolean, extraData?: boolean }
 
 export async function storeToken(token: TokenInformation, leagueId: number) {
+  // No destination is registered by default - this service never persists
+  // league content itself, so a league starts connected but with nowhere to
+  // export to until a destination (the operator's own app) is explicitly
+  // added via updateExport.
   const leagueConnection: StoredMaddenConnection = {
     blazeId: `${token.blazeId}`,
     leagueId: leagueId,
-    destinations: {
-      [DEFAULT_EXPORT]: { autoUpdate: true, leagueInfo: true, rosters: true, weeklyStats: true, url: DEFAULT_EXPORT, editable: false }
-    }
+    destinations: {}
   }
   await db.collection("league_connection").doc(`${leagueId}`).set(leagueConnection)
   const tokenInformation: StoredTokenInformation = {
@@ -562,52 +563,71 @@ export type ExtraData = {
 const PRESEASON_WEEKS = Array.from({ length: 4 }, (v, index) => index)
 const SEASON_WEEKS = Array.from({ length: 23 }, (v, index) => index).filter(i => i !== 21) // filters out pro bowl
 
-async function exportData(data: ExportData, destinations: { [key: string]: ExportDestination }, leagueId: string, platform: string) {
+// tracks, per destination url, whether every push made to it during this task
+// has succeeded so far - used to populate ExportDestination.lastSuccessfulExport
+type DestinationOutcomes = Map<string, { allSucceeded: boolean }>
 
-  const leagueInfo = Object.values(destinations).filter(d => d.leagueInfo).map(d => createDestination(d.url))
-  const weeklyStats = Object.values(destinations).filter(d => d.weeklyStats).map(d => createDestination(d.url))
+function trackOutcome(outcomes: DestinationOutcomes, url: string, result: PushResult) {
+  const outcome = outcomes.get(url)
+  if (outcome && result !== PushResult.SUCCESS) {
+    outcome.allSucceeded = false
+  }
+}
+
+async function exportData(data: ExportData, destinations: { [key: string]: ExportDestination }, leagueId: string, platform: string, outcomes: DestinationOutcomes) {
+
+  const leagueInfo = Object.values(destinations).filter(d => d.leagueInfo)
+  const weeklyStats = Object.values(destinations).filter(d => d.weeklyStats)
   if (leagueInfo.length > 0) {
 
-    await Promise.all(leagueInfo.flatMap(d => {
-      return [data.leagueTeams ? d.leagueTeams(platform, leagueId, data.leagueTeams) : Promise.resolve(), data.standings ? d.standings(platform, leagueId, data.standings) : Promise.resolve()]
+    await Promise.all(leagueInfo.flatMap(dest => {
+      const d = createDestination(dest.url, dest.secret)
+      return [
+        data.leagueTeams ? d.leagueTeams(platform, leagueId, data.leagueTeams).then(r => trackOutcome(outcomes, dest.url, r)) : Promise.resolve(),
+        data.standings ? d.standings(platform, leagueId, data.standings).then(r => trackOutcome(outcomes, dest.url, r)) : Promise.resolve()
+      ]
     }))
   }
   if (weeklyStats.length > 0) {
-    await Promise.all(weeklyStats.flatMap(d => {
+    await Promise.all(weeklyStats.flatMap(dest => {
+      const d = createDestination(dest.url, dest.secret)
       return data.weeks.flatMap(w => [
-        d.passing(platform, leagueId, w.weekIndex + 1, w.stage, w.passing),
-        d.schedules(platform, leagueId, w.weekIndex + 1, w.stage, w.schedules),
-        d.teamStats(platform, leagueId, w.weekIndex + 1, w.stage, w.teamstats),
-        d.defense(platform, leagueId, w.weekIndex + 1, w.stage, w.defense),
-        d.punting(platform, leagueId, w.weekIndex + 1, w.stage, w.punting),
-        d.receiving(platform, leagueId, w.weekIndex + 1, w.stage, w.receiving),
-        d.kicking(platform, leagueId, w.weekIndex + 1, w.stage, w.kicking),
-        d.rushing(platform, leagueId, w.weekIndex + 1, w.stage, w.rushing)
+        d.passing(platform, leagueId, w.weekIndex + 1, w.stage, w.passing).then(r => trackOutcome(outcomes, dest.url, r)),
+        d.schedules(platform, leagueId, w.weekIndex + 1, w.stage, w.schedules).then(r => trackOutcome(outcomes, dest.url, r)),
+        d.teamStats(platform, leagueId, w.weekIndex + 1, w.stage, w.teamstats).then(r => trackOutcome(outcomes, dest.url, r)),
+        d.defense(platform, leagueId, w.weekIndex + 1, w.stage, w.defense).then(r => trackOutcome(outcomes, dest.url, r)),
+        d.punting(platform, leagueId, w.weekIndex + 1, w.stage, w.punting).then(r => trackOutcome(outcomes, dest.url, r)),
+        d.receiving(platform, leagueId, w.weekIndex + 1, w.stage, w.receiving).then(r => trackOutcome(outcomes, dest.url, r)),
+        d.kicking(platform, leagueId, w.weekIndex + 1, w.stage, w.kicking).then(r => trackOutcome(outcomes, dest.url, r)),
+        d.rushing(platform, leagueId, w.weekIndex + 1, w.stage, w.rushing).then(r => trackOutcome(outcomes, dest.url, r))
       ])
     }))
   }
 }
 
-async function exportTeamData(data: TeamData, destinations: { [key: string]: ExportDestination }, leagueId: string, platform: string) {
-  const roster = Object.values(destinations).filter(d => d.rosters).map(d => createDestination(d.url))
+async function exportTeamData(data: TeamData, destinations: { [key: string]: ExportDestination }, leagueId: string, platform: string, outcomes: DestinationOutcomes) {
+  const roster = Object.values(destinations).filter(d => d.rosters)
   if (roster.length > 0) {
-    await Promise.all(roster.flatMap(d => {
+    await Promise.all(roster.flatMap(dest => {
+      const d = createDestination(dest.url, dest.secret)
       return Object.entries(data.roster).map(e => {
         const [teamId, roster] = e
         if (teamId === "freeagents") {
-          return d.freeagents(platform, leagueId, roster)
+          return d.freeagents(platform, leagueId, roster).then(r => trackOutcome(outcomes, dest.url, r))
         }
-        return d.teamRoster(platform, leagueId, teamId, roster)
+        return d.teamRoster(platform, leagueId, teamId, roster).then(r => trackOutcome(outcomes, dest.url, r))
       })
     }))
   }
 }
 
-async function exportExtraData(data: ExtraData, destinations: { [key: string]: ExportDestination }, leagueId: string, platform: string) {
-  const extraDataDestinations = Object.values(destinations).filter(d => d.extraData).map(d => createDestination(d.url))
+async function exportExtraData(data: ExtraData, destinations: { [key: string]: ExportDestination }, leagueId: string, platform: string, outcomes: DestinationOutcomes) {
+  const extraDataDestinations = Object.values(destinations).filter(d => d.extraData)
   if (extraDataDestinations.length > 0) {
-    await Promise.all(extraDataDestinations.map(async d => {
-      await d.extra(platform, leagueId, data)
+    await Promise.all(extraDataDestinations.map(async dest => {
+      const d = createDestination(dest.url, dest.secret)
+      const result = await d.extra(platform, leagueId, data)
+      trackOutcome(outcomes, dest.url, result)
     }))
   }
 }
@@ -667,6 +687,20 @@ async function handleExportTask(task: ExportJobTask): Promise<void> {
     throw new Error(`Invalid Export Task Request! ${request}`)
   }
   const destinations = Object.values(contextualExports)
+  // Track, per destination, when this task attempted to push to it and
+  // whether everything pushed so far has succeeded - persisted below so the
+  // dashboard can show export status without this service storing any of
+  // the actual league content it pushes through.
+  const attemptTimestamp = new Date()
+  const outcomes: DestinationOutcomes = new Map()
+  destinations.forEach(d => {
+    if (d.leagueInfo || d.weeklyStats || d.rosters || d.extraData) {
+      outcomes.set(d.url, { allSucceeded: true })
+    }
+  })
+  await Promise.all(Array.from(outcomes.keys()).map(url =>
+    client.updateExport({ ...contextualExports[url], lastExportAttempt: attemptTimestamp })
+  ))
   const leagueData = { weeks: [] } as any
   const leagueInfoRequests = [] as Promise<any>[]
   function toStage(stage: number): Stage {
@@ -678,7 +712,7 @@ async function handleExportTask(task: ExportJobTask): Promise<void> {
     leagueInfoRequests.push(client.getStandings(leagueId).then(t => leagueData.standings = t))
   }
   await Promise.all(leagueInfoRequests)
-  await exportData(leagueData as ExportData, contextualExports, `${leagueId}`, client.getSystemConsole())
+  await exportData(leagueData as ExportData, contextualExports, `${leagueId}`, client.getSystemConsole(), outcomes)
   task.status.leagueInfo = TaskStatus.FINISHED
   task.status.weeklyData = weeksToExport.map(w => ({ ...w, status: TaskStatus.NOT_STARTED }))
   if (destinations.some(e => e.weeklyStats)) {
@@ -711,7 +745,7 @@ async function handleExportTask(task: ExportJobTask): Promise<void> {
 
       // Process this batch and wait for completion before moving to next batch
       await Promise.all(batchDataRequests)
-      await exportData(weeklyData as ExportData, contextualExports, `${leagueId}`, client.getSystemConsole())
+      await exportData(weeklyData as ExportData, contextualExports, `${leagueId}`, client.getSystemConsole(), outcomes)
       task.status.weeklyData.forEach(w => {
         if (weekBatch.some(b => w.weekIndex === b.weekIndex && w.stage === b.stage)) {
           w.status = TaskStatus.FINISHED
@@ -735,14 +769,14 @@ async function handleExportTask(task: ExportJobTask): Promise<void> {
       )
       if ((idx + 1) % batchSize == 0) {
         await Promise.all(teamRequests)
-        await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole())
+        await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole(), outcomes)
         teamRequests = []
         teamData = { roster: {} }
       }
     }
     if (teamRequests.length > 0) {
       await Promise.all(teamRequests)
-      await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole())
+      await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole(), outcomes)
       teamRequests = []
       teamData = { roster: {} }
     }
@@ -755,8 +789,11 @@ async function handleExportTask(task: ExportJobTask): Promise<void> {
       calendarYear
     } = allLeagues.filter(l => l.leagueId === leagueId)[0]
     const extraData = { ...leagueInfo, leagueName, numMembers, calendarYear }
-    await exportExtraData(extraData, contextualExports, `${leagueId}`, client.getSystemConsole())
+    await exportExtraData(extraData, contextualExports, `${leagueId}`, client.getSystemConsole(), outcomes)
   }
+  await Promise.all(Array.from(outcomes.entries())
+    .filter(([_, outcome]) => outcome.allSucceeded)
+    .map(([url]) => client.updateExport({ ...contextualExports[url], lastExportAttempt: attemptTimestamp, lastSuccessfulExport: attemptTimestamp })))
 }
 
 const exportQueue: queueAsPromised<ExportJobTask> = fastq.promise(handleExportTask, QUEUE_CONCURRENCY)

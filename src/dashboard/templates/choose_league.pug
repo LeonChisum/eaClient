@@ -40,6 +40,8 @@ html
                             .mb-1
                               label.form-label(for="discord") Discord League (debug)
                               input#discord.form-control(type="text" name="discord" value=discord readonly=true aria-label="Discord League (debug)")
+                if return_to
+                  input#return_to(type="hidden" name="return_to" value=return_to readonly=true)
                 .mb-5
                   label.form-label(for="selectLeague")
                   .input-group

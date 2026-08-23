@@ -1,3 +1,10 @@
+// If this page was loaded with ?key=..., attach it as a bearer token so the
+// page's own buttons can call its API-key-protected endpoints. Anonymous
+// visitors without a key will get 401s from these buttons - that's expected.
+function authHeaders() {
+  return window.__SYNC_KEY__ ? { 'Authorization': 'Bearer ' + window.__SYNC_KEY__ } : {};
+}
+
 document.getElementById('addExportBtn').addEventListener('click', function () {
   const tableBody = document.getElementById('exportTableBody');
   const newRow = document.createElement('tr');
@@ -8,6 +15,9 @@ document.getElementById('addExportBtn').addEventListener('click', function () {
     <td style="text-align: center;"><input class="rosters" type="checkbox"></td>
     <td style="text-align: center;"><input class="extraData" type="checkbox"></td>
     <td style="text-align: center;"><input class="autoUpdate" type="checkbox"></td>
+    <td style="text-align: center;"><input type="password" class="form-control secret-input" placeholder="Optional"></td>
+    <td style="text-align: center;">-</td>
+    <td style="text-align: center;">-</td>
     <td style="text-align: center;">
       <button class="add-export-btn btn btn-outline-primary btn-sm">Add</button>
     </td>
@@ -20,12 +30,14 @@ document.getElementById('addExportBtn').addEventListener('click', function () {
     const rosters = newRow.querySelector('.rosters').checked;
     const extraData = newRow.querySelector('.extraData').checked;
     const autoUpdate = newRow.querySelector('.autoUpdate').checked;
+    const secret = newRow.querySelector('.secret-input').value;
 
     try {
       const response = await fetch(window.location.pathname + '/updateExport', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...authHeaders()
         },
         body: JSON.stringify({
           url,
@@ -34,6 +46,7 @@ document.getElementById('addExportBtn').addEventListener('click', function () {
           rosters,
           extraData,
           autoUpdate,
+          ...(secret ? { secret } : {}),
           editable: true,
         })
       });
@@ -55,7 +68,8 @@ document.querySelectorAll('.remove-export-btn').forEach(btn => {
       const response = await fetch(window.location.pathname + '/deleteExport', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...authHeaders()
         },
         body: JSON.stringify({url})
       });
@@ -150,7 +164,8 @@ async function pollExportStatus(taskId, feedbackDiv) {
       const response = await fetch('/dashboard/league/exportStatus', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...authHeaders()
         },
         body: JSON.stringify({ taskId })
       });
@@ -218,7 +233,8 @@ document.getElementById('exportBtn').addEventListener('click', async function ()
     const response = await fetch(window.location.pathname + '/export', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...authHeaders()
       },
       body: JSON.stringify({ exportOption: selectedOption })
     });
@@ -250,7 +266,8 @@ document.getElementById('unlinkBtn').addEventListener('click', async function ()
     const response = await fetch(window.location.pathname + '/unlink', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...authHeaders()
       }
     });
 
