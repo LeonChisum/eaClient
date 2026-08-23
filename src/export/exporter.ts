@@ -7,6 +7,7 @@ import { DEPLOYMENT_URL } from "../config";
 import FileHandler, { defaultSerializer } from "../file_handlers"
 import { maddenHashEventChanged, maddenHashEventsTotal } from "../debug/metrics";
 import { sha1 } from "hash-wasm"
+import { createHmac } from "crypto"
 
 const hash: (a: any) => Promise<string> = (a: any) => {
   return sha1(JSON.stringify(a))
@@ -32,93 +33,77 @@ export interface MaddenExportDestination {
   extra(platform: string, leagueId: string, data: ExtraData): Promise<ExportResult>
 }
 
-export function MaddenUrlDestination(baseUrl: string): MaddenExportDestination {
+// Signs outbound pushes to external destinations so the receiving app can
+// verify a payload actually came from this service and wasn't tampered with
+// or replayed. Mirrors the HMAC-SHA256 pattern already used for Twitch
+// webhooks in this codebase (src/twitch-notifier/routes.ts). No secret means
+// no signature headers - this stays backwards compatible with destinations
+// that don't configure one.
+function signedHeaders(secret: string | undefined, body: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (secret) {
+    const timestamp = `${Date.now()}`
+    const signature = createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")
+    headers["X-Snallabot-Timestamp"] = timestamp
+    headers["X-Snallabot-Signature"] = `sha256=${signature}`
+  }
+  return headers
+}
+
+export function MaddenUrlDestination(baseUrl: string, secret?: string): MaddenExportDestination {
   const url = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl
-  async function exportWeeklyData<T>(platform: string, leagueId: string, week: number, stage: Stage, data: T, ending: string) {
-    const stagePrefix = stage === Stage.SEASON ? "reg" : "pre"
-    const res = await fetch(`${url}/${platform}/${leagueId}/week/${stagePrefix}/${week}/${ending}`, {
+  async function postJson<T>(path: string, data: T): Promise<ExportResult> {
+    const body = JSON.stringify(data)
+    const res = await fetch(`${url}${path}`, {
       method: "POST",
-      body: JSON.stringify(data),
-      headers: {
-        "Content-Type": "application/json",
-      }
+      body: body,
+      headers: signedHeaders(secret, body),
     })
     return res.ok ? ExportResult.SUCCESS : ExportResult.FAILURE
   }
+  function exportWeeklyData<T>(platform: string, leagueId: string, week: number, stage: Stage, data: T, ending: string) {
+    const stagePrefix = stage === Stage.SEASON ? "reg" : "pre"
+    return postJson(`/${platform}/${leagueId}/week/${stagePrefix}/${week}/${ending}`, data)
+  }
   return {
-    leagueTeams: async function(platform: string, leagueId: string, data: TeamExport): Promise<ExportResult> {
-      const res = await fetch(`${url}/${platform}/${leagueId}/leagueteams`, {
-        method: "POST",
-        body: JSON.stringify(data),
-        headers: {
-          "Content-Type": "application/json",
-        }
-      })
-      return res.ok ? ExportResult.SUCCESS : ExportResult.FAILURE
+    leagueTeams: function(platform: string, leagueId: string, data: TeamExport): Promise<ExportResult> {
+      return postJson(`/${platform}/${leagueId}/leagueteams`, data)
     },
-    standings: async function(platform: string, leagueId: string, data: StandingExport): Promise<ExportResult> {
-      const res = await fetch(`${url}/${platform}/${leagueId}/standings`, {
-        method: "POST",
-        body: JSON.stringify(data),
-        headers: {
-          "Content-Type": "application/json",
-        }
-      })
-      return res.ok ? ExportResult.SUCCESS : ExportResult.FAILURE
+    standings: function(platform: string, leagueId: string, data: StandingExport): Promise<ExportResult> {
+      return postJson(`/${platform}/${leagueId}/standings`, data)
     },
-    schedules: async function(platform: string, leagueId: string, week: number, stage: Stage, data: SchedulesExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "schedules")
+    schedules: function(platform: string, leagueId: string, week: number, stage: Stage, data: SchedulesExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "schedules")
     },
-    punting: async function(platform: string, leagueId: string, week: number, stage: Stage, data: PuntingExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "punting")
+    punting: function(platform: string, leagueId: string, week: number, stage: Stage, data: PuntingExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "punting")
     },
-    teamStats: async function(platform: string, leagueId: string, week: number, stage: Stage, data: TeamStatsExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "teamstats")
+    teamStats: function(platform: string, leagueId: string, week: number, stage: Stage, data: TeamStatsExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "teamstats")
     },
-    passing: async function(platform: string, leagueId: string, week: number, stage: Stage, data: PassingExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "passing")
+    passing: function(platform: string, leagueId: string, week: number, stage: Stage, data: PassingExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "passing")
     },
-    kicking: async function(platform: string, leagueId: string, week: number, stage: Stage, data: KickingExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "kicking")
+    kicking: function(platform: string, leagueId: string, week: number, stage: Stage, data: KickingExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "kicking")
     },
-    rushing: async function(platform: string, leagueId: string, week: number, stage: Stage, data: RushingExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "rushing")
+    rushing: function(platform: string, leagueId: string, week: number, stage: Stage, data: RushingExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "rushing")
     },
-    defense: async function(platform: string, leagueId: string, week: number, stage: Stage, data: DefensiveExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "defense")
+    defense: function(platform: string, leagueId: string, week: number, stage: Stage, data: DefensiveExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "defense")
     },
-    receiving: async function(platform: string, leagueId: string, week: number, stage: Stage, data: ReceivingExport): Promise<ExportResult> {
-      return await exportWeeklyData(platform, leagueId, week, stage, data, "receiving")
+    receiving: function(platform: string, leagueId: string, week: number, stage: Stage, data: ReceivingExport): Promise<ExportResult> {
+      return exportWeeklyData(platform, leagueId, week, stage, data, "receiving")
     },
-    freeagents: async function(platform: string, leagueId: string, data: RosterExport) {
-      const res = await fetch(`${url}/${platform}/${leagueId}/freeagents/roster`, {
-        method: "POST",
-        body: JSON.stringify(data),
-        headers: {
-          "Content-Type": "application/json",
-        }
-      })
-      return res.ok ? ExportResult.SUCCESS : ExportResult.FAILURE
+    freeagents: function(platform: string, leagueId: string, data: RosterExport) {
+      return postJson(`/${platform}/${leagueId}/freeagents/roster`, data)
     },
-    teamRoster: async function(platform: string, leagueId: string, teamId: string, data: RosterExport) {
-      const res = await fetch(`${url}/${platform}/${leagueId}/team/${teamId}/roster`, {
-        method: "POST",
-        body: JSON.stringify(data),
-        headers: {
-          "Content-Type": "application/json",
-        }
-      })
-      return res.ok ? ExportResult.SUCCESS : ExportResult.FAILURE
+    teamRoster: function(platform: string, leagueId: string, teamId: string, data: RosterExport) {
+      return postJson(`/${platform}/${leagueId}/team/${teamId}/roster`, data)
     },
-    extra: async function(platform: string, leagueId: string, data: ExtraData) {
-      const res = await fetch(`${url}/${platform}/${leagueId}/extra`, {
-        method: "POST",
-        body: JSON.stringify(data),
-        headers: {
-          "Content-Type": "application/json",
-        }
-      })
-      return res.ok ? ExportResult.SUCCESS : ExportResult.FAILURE
+    extra: function(platform: string, leagueId: string, data: ExtraData) {
+      return postJson(`/${platform}/${leagueId}/extra`, data)
     }
   }
 }
@@ -214,11 +199,11 @@ export const SnallabotExportDestination: MaddenExportDestination = {
   }
 }
 
-export function createDestination(url: string) {
+export function createDestination(url: string, secret?: string) {
   if (url.includes(DEPLOYMENT_URL)) {
     return SnallabotExportDestination
   } else {
-    return MaddenUrlDestination(url)
+    return MaddenUrlDestination(url, secret)
   }
 }
 const OPTIMIZE_WRITES = process.env.USE_WRITE_HASHES === "true"

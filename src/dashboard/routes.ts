@@ -7,10 +7,9 @@ import { BlazeError, ExportContext, ExportDestination, unlinkLeague, ephemeralCl
 import { removeLeague, setLeague } from "../connections/routes"
 import { discordLeagueView } from "../db/view"
 import LeagueSettingsDB from "../discord/settings_db"
-import MaddenDB, { MaddenEvents, parseExportStatusWeekKey } from "../db/madden_db"
-import { MADDEN_SEASON, getMessageForWeek } from "../export/madden_league_types"
 import { createProdClient } from "../discord/discord_utils"
-import { DEPLOYMENT_URL } from "../config"
+import { requireApiKey } from "./auth_middleware"
+import { DEPLOYMENT_URL, ALLOWED_RETURN_TO_ORIGINS } from "../config"
 
 const startRender = Pug.compileFile(path.join(__dirname, "/templates/start.pug"))
 const errorRender = Pug.compileFile(path.join(__dirname, "/templates/error.pug"))
@@ -20,14 +19,45 @@ const dashboardRender = Pug.compileFile(path.join(__dirname, "/templates/dashboa
 
 const router = new Router({ prefix: "/dashboard" })
 
-const client = createProdClient()
+// Discord guild-linking is optional in this deployment - createProdClient()
+// throws immediately if PUBLIC_KEY/DISCORD_TOKEN/APP_ID aren't set, so it's
+// only constructed when those are actually configured.
+const discordEnabled = Boolean(process.env.DISCORD_TOKEN && process.env.PUBLIC_KEY && process.env.APP_ID)
+const client = discordEnabled ? createProdClient() : null
 const DISCORD_REDIRECT_URL = `${DEPLOYMENT_URL}/dashboard/guilds`
 
-type RetrievePersonasRequest = { code: string, discord?: string }
-type LinkPersona = { selected_persona: string, access_token: string, discord?: string, console_override: ConsoleOverride }
+type RetrievePersonasRequest = { code: string, discord?: string, return_to?: string }
+type LinkPersona = { selected_persona: string, access_token: string, discord?: string, return_to?: string, console_override: ConsoleOverride }
 type RequestPersona = Persona & { maddenEntitlement: string }
-type ConnectLeague = { access_token: string, refresh_token: string, expiry: string, console: SystemConsole, selected_league: string, blaze_id: string, discord?: string }
+type ConnectLeague = { access_token: string, refresh_token: string, expiry: string, console: SystemConsole, selected_league: string, blaze_id: string, discord?: string, return_to?: string }
 type ConnnectDiscord = { guildId: string, leagueId: number }
+
+// `return_to` lets an external caller (see docs/standalone-sync-service.md in
+// the LeagueCard repo) learn which EA leagueId a commissioner just connected,
+// by getting redirected back to its own domain with `?leagueId=...` appended
+// once /connect finishes - mirrors the existing `discord` passthrough exactly
+// (same hop-by-hop hidden-form-field threading), see start.pug/persona.pug/
+// choose_league.pug. Fails closed: an origin not in ALLOWED_RETURN_TO_ORIGINS
+// is dropped silently at every hop, falling back to this service's own
+// default behavior rather than becoming an open redirect.
+function safeReturnTo(candidate: string | undefined): string | undefined {
+  if (!candidate) return undefined
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch (e) {
+    return undefined
+  }
+  if (!ALLOWED_RETURN_TO_ORIGINS.includes(parsed.origin)) {
+    return undefined
+  }
+  return candidate
+}
+
+function withLeagueId(returnTo: string, leagueId: number): string {
+  const separator = returnTo.includes("?") ? "&" : "?"
+  return `${returnTo}${separator}leagueId=${leagueId}`
+}
 
 async function renderErrorsMiddleware(ctx: ParameterizedContext, next: Next) {
   try {
@@ -66,16 +96,16 @@ async function renderConnectedLeagueErrorsMiddleware(ctx: ParameterizedContext, 
 }
 
 router.get("/", async (ctx) => {
-  const { discord_connection: discordConnection } = ctx.query
+  const { discord_connection: discordConnection, return_to: returnTo } = ctx.query
   if (discordConnection) {
     const view = await discordLeagueView.createView(discordConnection as string)
     if (view?.leagueId) {
       ctx.redirect(`/dashboard/league/${view.leagueId}`)
     }
   }
-  ctx.body = startRender({ url: EA_LOGIN_URL, discord: discordConnection })
+  ctx.body = startRender({ url: EA_LOGIN_URL, discord: discordConnection, return_to: safeReturnTo(returnTo as string | undefined) })
 }).post("/retrievePersonas", renderErrorsMiddleware, async (ctx, next) => {
-  const { code: rawCode, discord } = ctx.request.body as RetrievePersonasRequest
+  const { code: rawCode, discord, return_to: returnTo } = ctx.request.body as RetrievePersonasRequest
   const searchParams = rawCode.substring(rawCode.indexOf("?"))
   const eaCodeParams = new URLSearchParams(searchParams)
   const code = eaCodeParams.get("code")
@@ -164,9 +194,9 @@ router.get("/", async (ctx) => {
   if (finalPersonas.length === 0) {
     throw new EAAccountError("There are no Madden accounts associated with this EA account!", `This may happen because the EA account used to login is not the right one or is not connected to Madden. One potential fix is to try connecting this EA account to your Madden one, or checking if it is the right one. You can do this at this at this link <a href="https://myaccount.ea.com/cp-ui/connectaccounts/index" target="_blank">https://myaccount.ea.com/cp-ui/connectaccounts/index</a>`)
   }
-  ctx.body = personaRender({ personas: finalPersonas, namespaces: NAMESPACES, access_token, discord: discord, all_consoles: ALL_CONSOLES })
+  ctx.body = personaRender({ personas: finalPersonas, namespaces: NAMESPACES, access_token, discord: discord, return_to: safeReturnTo(returnTo), all_consoles: ALL_CONSOLES })
 }).post("/selectLeague", renderErrorsMiddleware, async (ctx, next) => {
-  const { selected_persona, access_token, discord, console_override } = ctx.request.body as LinkPersona
+  const { selected_persona, access_token, discord, return_to: returnTo, console_override } = ctx.request.body as LinkPersona
   const persona = JSON.parse(selected_persona) as RequestPersona
   if (console_override !== ConsoleOverride.NONE) {
     persona.maddenEntitlement = CONSOLE_OVERRIDE_TO_ENTITLEMENT[console_override]
@@ -219,7 +249,7 @@ router.get("/", async (ctx) => {
   const expiry = new Date(new Date().getTime() + token.expires_in * 1000)
   const eaClient = await ephemeralClientFromToken({ accessToken: token.access_token, refreshToken: token.refresh_token, expiry: expiry, console: systemConsole, blazeId: `${persona.personaId}` })
   const leagues = await eaClient.getLeagues()
-  ctx.body = selectLeagueRender({ discord: discord, access_token: token.access_token, refresh_token: token.refresh_token, systemConsole: systemConsole, expiry: expiry, blazeId: persona.personaId, leagues: leagues.map(l => ({ leagueId: l.leagueId, leagueName: l.leagueName, userTeamName: l.userTeamName })) })
+  ctx.body = selectLeagueRender({ discord: discord, return_to: safeReturnTo(returnTo), access_token: token.access_token, refresh_token: token.refresh_token, systemConsole: systemConsole, expiry: expiry, blazeId: persona.personaId, leagues: leagues.map(l => ({ leagueId: l.leagueId, leagueName: l.leagueName, userTeamName: l.userTeamName })) })
 }).post("/connect", renderErrorsMiddleware, async (ctx, next) => {
   const connectRequest = ctx.request.body as ConnectLeague
   const token = { accessToken: connectRequest.access_token, refreshToken: connectRequest.refresh_token, console: connectRequest.console, expiry: new Date(Number(connectRequest.expiry)), blazeId: `${connectRequest.blaze_id}` }
@@ -232,77 +262,62 @@ router.get("/", async (ctx) => {
   if (connectRequest.discord) {
     await setLeague(connectRequest.discord, `${leagueId}`)
   }
-  ctx.redirect(`/dashboard/league/${leagueId}`)
+  const returnTo = safeReturnTo(connectRequest.return_to)
+  ctx.redirect(returnTo ? withLeagueId(returnTo, leagueId) : `/dashboard/league/${leagueId}`)
 }).get("/league/:leagueId", renderConnectedLeagueErrorsMiddleware, async (ctx) => {
   const { leagueId: rawLeagueId } = ctx.params
-  const { discord_token } = ctx.query as { discord_token?: string }
+  const { discord_token, key: apiKey } = ctx.query as { discord_token?: string, key?: string }
   const leagueId = Number(rawLeagueId)
   if (isNaN(leagueId)) {
     throw Error(`Invalid League ${leagueId}`)
   }
   const eaClient = await storedTokenClient(leagueId)
   // important that we do all requests together instead of sequentially so we can show the page as fast as possible
-  const [leagueInfo, allLeagues, exportStatus, latestTeams, discordLeagues] = await Promise.all([eaClient.getLeagueInfo(leagueId), eaClient.getLeagues(), MaddenDB.getExportStatus(rawLeagueId), MaddenDB.getLatestTeams(rawLeagueId), LeagueSettingsDB.getLeagueSettingsForLeagueId(rawLeagueId)])
+  const [leagueInfo, allLeagues, discordLeagues] = await Promise.all([eaClient.getLeagueInfo(leagueId), eaClient.getLeagues(), LeagueSettingsDB.getLeagueSettingsForLeagueId(rawLeagueId)])
   const leagueName = allLeagues.filter(l => l.leagueId === leagueId)
     .map(l => l.leagueName)[0]
-  const exports = eaClient.getExports()
+  // This service doesn't store league content, so export status is whatever
+  // is on the destination itself (lastExportAttempt/lastSuccessfulExport) -
+  // and secrets are stripped before anything is rendered to HTML (only
+  // whether one is configured is shown, never the value itself).
+  const exports = Object.fromEntries(Object.entries(eaClient.getExports()).map(([url, destination]) => {
+    const { secret, ...rest } = destination
+    return [url, { ...rest, hasSecret: Boolean(secret) }]
+  }))
   const {
     gameScheduleHubInfo,
     teamIdInfoList,
     careerHubInfo: { seasonInfo },
     secsSinceLastAdvancedTime
   } = leagueInfo;
-  const rosterStatus = Object.fromEntries(Object.entries(exportStatus?.rosterStatus || {}).map(e => {
-    const [teamId, status] = e
-    if (teamId === "0") {
-      return ["Free Agents", status]
-    }
-    try {
-      const team = latestTeams.getTeamForId(Number(teamId)).displayName
-      return [team, status]
-    } catch (e) {
-      return ["Unknown Team", status]
-    }
-  }))
-  const weeklyStatus = Object.fromEntries(Object.entries(exportStatus?.weeklyStatus || {}).map(e => {
-    const [weekSeasonKey, status] = e
-    const weekSeason = parseExportStatusWeekKey(weekSeasonKey)
-    return [weekSeasonKey, { ...status, displayName: `Year ${weekSeason.seasonIndex + MADDEN_SEASON}, ${getMessageForWeek(weekSeason.weekIndex)}` }]
-  }))
   const lastAdvance = new Date(Date.now() - (secsSinceLastAdvancedTime * 1000));
-  const displayableExportStatus = exportStatus ? {
-    [MaddenEvents.MADDEN_STANDING]: exportStatus?.[MaddenEvents.MADDEN_STANDING],
-    [MaddenEvents.MADDEN_TEAM]: exportStatus?.[MaddenEvents.MADDEN_TEAM],
-    rosterStatus: rosterStatus,
-    weeklyStatus: weeklyStatus
-  } : exportStatus
-  const settledSettings = await Promise.allSettled(discordLeagues.map(async l => {
-    const g = await client.getGuildInformation(l.guildId)
+  const settledSettings = discordEnabled ? await Promise.allSettled(discordLeagues.map(async l => {
+    const g = await client!.getGuildInformation(l.guildId)
     return { name: g.name, icon: g.icon, settings: l }
-  }))
-  const userGuilds = discord_token ? await client.getUserGuilds(discord_token) : []
+  })) : []
+  const userGuilds = discordEnabled && discord_token ? await client!.getUserGuilds(discord_token) : []
   const discordsToConnect = userGuilds.map(d => ({ name: d.name, guildId: d.id }))
-  const oauthUrl = client.generateOAuthRedirect(DISCORD_REDIRECT_URL, "guilds", rawLeagueId)
+  const oauthUrl = discordEnabled ? client!.generateOAuthRedirect(DISCORD_REDIRECT_URL, "guilds", rawLeagueId) : ""
 
   const discordSettings = settledSettings.flatMap(s => s.status === "fulfilled" ? [s.value] : [])
   ctx.body = dashboardRender({
-    gameScheduleHubInfo: gameScheduleHubInfo, teamIdInfoList: teamIdInfoList, seasonInfo: seasonInfo, leagueName: leagueName, exports: exports, exportOptions: exportOptions, seasonWeekType: seasonType(seasonInfo), lastAdvance, exportStatus: displayableExportStatus, discordSettings, discordsToConnect, oauthUrl, leagueId: rawLeagueId
+    gameScheduleHubInfo: gameScheduleHubInfo, teamIdInfoList: teamIdInfoList, seasonInfo: seasonInfo, leagueName: leagueName, exports: exports, exportOptions: exportOptions, seasonWeekType: seasonType(seasonInfo), lastAdvance, discordEnabled, discordSettings, discordsToConnect, oauthUrl, leagueId: rawLeagueId, apiKey: apiKey || ""
   })
-}).post("/league/:leagueId/updateExport", async (ctx, next) => {
+}).post("/league/:leagueId/updateExport", requireApiKey(), async (ctx, next) => {
   const { leagueId: rawLeagueId } = ctx.params
   const leagueId = Number(rawLeagueId)
   const newDestination = ctx.request.body as ExportDestination
   const client = await storedTokenClient(leagueId)
   await client.updateExport(newDestination)
   ctx.status = 200
-}).post("/league/:leagueId/deleteExport", async (ctx, next) => {
+}).post("/league/:leagueId/deleteExport", requireApiKey(), async (ctx, next) => {
   const { leagueId: rawLeagueId } = ctx.params
   const leagueId = Number(rawLeagueId)
   const urlToDelete = ctx.request.body as { url: string }
   const client = await storedTokenClient(leagueId)
   await client.removeExport(urlToDelete.url)
   ctx.status = 200
-}).post("/league/:leagueId/export", async (ctx, next) => {
+}).post("/league/:leagueId/export", requireApiKey(), async (ctx, next) => {
   const { leagueId: rawLeagueId } = ctx.params
   const option = ctx.request.body as { exportOption: keyof typeof exportOptions }
   const exportValue = exportOptions[`${option.exportOption}`]
@@ -322,7 +337,7 @@ router.get("/", async (ctx) => {
   ctx.body = {
     taskId: task.id
   }
-}).post("/league/exportStatus", async (ctx, next) => {
+}).post("/league/exportStatus", requireApiKey(), async (ctx, next) => {
   const { taskId } = ctx.request.body as { taskId: string }
   const task = getTask(taskId)
   const position = getPositionInQueue(taskId)
@@ -330,7 +345,7 @@ router.get("/", async (ctx) => {
   ctx.body = {
     task: task, position: position
   }
-}).post("/league/:leagueId/unlink", async (ctx, next) => {
+}).post("/league/:leagueId/unlink", requireApiKey(), async (ctx, next) => {
   const { leagueId: rawLeagueId } = ctx.params
   const leagueId = Number(rawLeagueId)
   // ignore any errors that happen when deleting the league
@@ -344,13 +359,23 @@ router.get("/", async (ctx) => {
   }))
   ctx.status = 200
 }).get("/guilds", async (ctx, next) => {
+  if (!discordEnabled) {
+    ctx.status = 404
+    ctx.body = { message: "Discord linking is not configured on this deployment" }
+    return
+  }
   const { code, state } = ctx.query
   if (!code || !state) {
     throw new Error("Invalid discord oauth, if errors seek support")
   }
-  const token = await client.retrieveAccessToken(code as string, DISCORD_REDIRECT_URL)
+  const token = await client!.retrieveAccessToken(code as string, DISCORD_REDIRECT_URL)
   ctx.redirect(`/dashboard/league/${state}?discord_token=${token}`)
 }).post("/connectDiscord", async (ctx, next) => {
+  if (!discordEnabled) {
+    ctx.status = 404
+    ctx.body = { message: "Discord linking is not configured on this deployment" }
+    return
+  }
   const connectRequest = ctx.request.body as ConnnectDiscord
   await setLeague(connectRequest.guildId, `${connectRequest.leagueId}`)
   ctx.redirect(`/dashboard/league/${connectRequest.leagueId}`)

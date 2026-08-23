@@ -21,8 +21,10 @@ html
                   .mb-1
                     label.form-label(for="discord") Discord League (debug)
                     input#discord.form-control(type="text" name="discord" value=discord readonly=true aria-label="Discord League (debug)")
+                if return_to
+                  input#return_to(type="hidden" name="return_to" value=return_to readonly=true)
                 .mb-1
-                  label.form-label(for="selectedPersona") 
+                  label.form-label(for="selectedPersona")
                   .input-group
                     span.input-group-text Persona
                     select#selectedPersona.form-select(name="selected_persona" required=true)

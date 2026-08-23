@@ -16,3 +16,12 @@ if (process.env.QUEUE_CONCURRENCY) {
   queueConcurrency = Number(process.env.QUEUE_CONCURRENCY)
 }
 export const QUEUE_CONCURRENCY = queueConcurrency
+
+// Origins allowed to be used as a `return_to` value in the EA-connect dashboard
+// flow (see dashboard/routes.ts). Fails closed - an empty/unset list means no
+// return_to is ever honored, same "no default, must opt in" posture as
+// SYNC_API_KEY. Comma-separated, e.g. "https://leaguecard.example.com".
+export const ALLOWED_RETURN_TO_ORIGINS = (process.env.ALLOWED_RETURN_TO_ORIGINS || "")
+  .split(",")
+  .map(o => o.trim())
+  .filter(Boolean)
