@@ -12,7 +12,7 @@ services:
   - type: web
     name: eaclient-sync-service
     runtime: node
-    plan: starter
+    plan: free
     branch: main
     buildCommand: npm install && npm run build
     startCommand: npm run start
@@ -42,7 +42,7 @@ services:
   - type: worker
     name: eaclient-ea-refresher
     runtime: node
-    plan: starter
+    plan: free
     branch: main
     buildCommand: npm install && npm run build
     startCommand: npm run ea-refresher
