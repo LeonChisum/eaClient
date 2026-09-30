@@ -115,9 +115,22 @@ async function refreshToken(token: TokenInformation): Promise<TokenInformation> 
     });
     const newToken = await res.json() as AccountToken
     if (!res.ok || !newToken.access_token) {
+      // EA's refresh tokens are single-use - the ea_refresher background
+      // process and this call can both read the same stored refresh token
+      // before either writes back a new one, and whichever request loses
+      // that race gets exactly this error even though the league is still
+      // connected fine. Before giving up, check whether a fresher token was
+      // already written concurrently (proof the other request won) and use
+      // that instead of forcing a reconnect.
+      const stored = await getTokenForLeague(token.blazeId).catch(() => undefined)
+      if (stored && stored.token.refreshToken !== token.refreshToken && new Date() < new Date(stored.token.expiry)) {
+        console.log(`Recovered token for blaze account ${token.blazeId} from a concurrent refresh, valid until ${new Date(stored.token.expiry).toISOString()}`)
+        return stored.token
+      }
       throw new EAAccountError(`Error refreshing tokens, response from EA ${JSON.stringify(newToken)}`, `Lost connection to EA. Connect this league again via ${DEPLOYMENT_URL}/dashboard`)
     }
     const newExpiry = new Date(new Date().getTime() + newToken.expires_in * 1000)
+    console.log(`Refreshed EA token for blaze account ${token.blazeId}, now valid until ${newExpiry.toISOString()}`)
     return { accessToken: newToken.access_token, refreshToken: newToken.refresh_token, expiry: newExpiry, console: token.console, blazeId: `${token.blazeId}` }
   } else {
     return token

@@ -13,7 +13,7 @@ services:
     name: eaclient-sync-service
     runtime: node
     plan: free
-    branch: main
+    branch: standalone-ea-sync-service
     buildCommand: npm install && npm run build
     startCommand: npm run start
     healthCheckPath: /debug/memoryUsage
@@ -34,6 +34,13 @@ services:
         sync: false # paste the full Firestore service-account JSON (one line) here
       - key: PUSHGATEWAY_URL
         sync: false # optional - only if you run a Prometheus Pushgateway
+      # Fail-closed allowlist (src/config.ts) for the /connect return_to
+      # redirect - without this, selecting a league silently strands the
+      # browser on this service's own /dashboard/league/{leagueId} instead of
+      # returning to the consuming app. Exact origin match required (scheme +
+      # host, no trailing slash, no path) - comma-separate multiple origins.
+      - key: ALLOWED_RETURN_TO_ORIGINS
+        value: https://leaguecard-web-2ea6.onrender.com
 
   # Background worker: keeps connected leagues' EA tokens refreshed so the
   # web service never needs a fresh browser login. Must stay running
