@@ -21,7 +21,7 @@ function sleep(ms: number) {
 
 const SLEEP_MIN = 60
 
-async function runLeagueChecks() {
+export async function runLeagueChecks() {
   while (true) {
     const cycleStart = Date.now()
     const leagues = await getLatestLeagues()
@@ -50,4 +50,6 @@ async function runLeagueChecks() {
   }
 }
 
-runLeagueChecks()
+if (require.main === module) {
+  runLeagueChecks()
+}

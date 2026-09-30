@@ -2,17 +2,28 @@
 # See docs/standalone-sync-service.md for what this mode does and doesn't do.
 #
 # Deploy: push this file to the repo root, then in Render "New +" -> "Blueprint",
-# point it at this repo/branch. Render reads this file and creates both services.
+# point it at this repo/branch. Render reads this file and creates the service.
 # Fill in the `sync: false` env vars in the dashboard after the first deploy -
 # they're marked that way so their values never get committed to git.
 
 services:
-  # Public web service: EA OAuth dashboard + the sync-trigger/config API
-  # your app calls (export, updateExport, deleteExport, exportStatus, unlink).
+  # Single service: EA OAuth dashboard + the sync-trigger/config API your app
+  # calls (export, updateExport, deleteExport, exportStatus, unlink), AND the
+  # continuous EA-token-refresh loop (src/dashboard/ea_refresher.ts) running
+  # in the same Node process (started from src/index.ts) rather than as a
+  # separate worker service - see docs/standalone-sync-service.md.
+  #
+  # This must stay on a paid plan, not free: Render's free web services spin
+  # down after ~15 min without HTTP traffic, which would pause the token
+  # refresh loop along with the dashboard and let connected leagues' EA
+  # tokens go stale whenever nobody's visited the dashboard recently. A
+  # paid plan (e.g. Starter) never spins down, so the refresh loop keeps
+  # running regardless of dashboard traffic - the same guarantee a separate
+  # background worker gave before this was merged into one service.
   - type: web
     name: eaclient-sync-service
     runtime: node
-    plan: free
+    plan: starter
     branch: standalone-ea-sync-service
     buildCommand: npm install && npm run build
     startCommand: npm run start
@@ -20,7 +31,7 @@ services:
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: "21"
+        value: '21'
       - key: DEPLOYMENT_URL
         # Render sets RENDER_EXTERNAL_URL automatically; if you attach a
         # custom domain instead, replace this with that domain's https URL.
@@ -41,23 +52,3 @@ services:
       # host, no trailing slash, no path) - comma-separate multiple origins.
       - key: ALLOWED_RETURN_TO_ORIGINS
         value: https://leaguecard-web-2ea6.onrender.com
-
-  # Background worker: keeps connected leagues' EA tokens refreshed so the
-  # web service never needs a fresh browser login. Must stay running
-  # continuously (it's an infinite loop, not a one-shot job) - see
-  # src/dashboard/ea_refresher.ts.
-  - type: worker
-    name: eaclient-ea-refresher
-    runtime: node
-    plan: free
-    branch: main
-    buildCommand: npm install && npm run build
-    startCommand: npm run ea-refresher
-    autoDeploy: true
-    envVars:
-      - key: NODE_VERSION
-        value: "21"
-      - key: SERVICE_ACCOUNT
-        sync: false # same Firestore service-account JSON as the web service
-      - key: PUSHGATEWAY_URL
-        sync: false # optional
